@@ -1,0 +1,17 @@
+# Dependências
+node_modules/
+
+# Segredos e configuração local
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Arquivos locais do Claude Code
+.claude/
+
+# Saídas de teste e logs
+*.log
+lovable-test-output.json
+mcp-list-full.txt

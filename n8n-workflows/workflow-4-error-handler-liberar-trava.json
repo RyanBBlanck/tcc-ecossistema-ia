@@ -1,0 +1,70 @@
+{
+  "name": "TCC - Workflow 4 - Error Handler (Liberar Trava Global)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "a1a1a1a1-0000-4000-9000-000000000001",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        -200,
+        0
+      ],
+      "notes": "Disparado automaticamente pelo n8n sempre que o Workflow 1, 2 ou 3 falhar sem tratamento (configurar em cada um: Settings -> Error Workflow -> este workflow)."
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "automation_lock"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "lock_name",
+              "condition": "eq",
+              "keyValue": "global"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "idle",
+            "locked_by": ""
+          }
+        }
+      },
+      "id": "a1a1a1a1-0000-4000-9000-000000000002",
+      "name": "Liberar Trava Global (Erro)",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        40,
+        0
+      ],
+      "notes": "CONFIRA depois de importar: selecione a tabela 'automation_lock' no dropdown e confirme o mapeamento das colunas -- os nomes de campo deste node podem precisar de ajuste manual."
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Liberar Trava Global (Erro)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "tcc-workflow-4-error"
+  }
+}

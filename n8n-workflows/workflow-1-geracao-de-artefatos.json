@@ -1,0 +1,551 @@
+{
+  "name": "TCC - Workflow 1 - Geração de Artefatos (Claude Code)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "d3c3c3c3-0000-4000-8000-000000000001",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        40,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://host.docker.internal:8080/issues.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "status_id",
+              "value": "open"
+            },
+            {
+              "name": "cf_1",
+              "value": "1"
+            },
+            {
+              "name": "limit",
+              "value": "100"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "d3c3c3c3-0000-4000-8000-000000000002",
+      "name": "GET Redmine Issues (New + AI Required)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        280,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_REDMINE_CREDENTIAL_ID",
+          "name": "Redmine API"
+        }
+      },
+      "notes": "status_id=open traz todos os status nao-fechados; o filtro exato (New=1 ou Questions Answered=14) e revalidado no Code node seguinte, que descarta qualquer outro status (Under Analysis, Waiting for Answers, etc)."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Transforma o array de issues em itens individuais do n8n, um por issue,\n// pra que o proximo node (GET individual) rode uma vez por issue.\n// Se nao houver nenhuma issue elegivel, sinaliza isso explicitamente\n// (em vez de simplesmente nao produzir nada), pra permitir liberar a\n// trava global mesmo quando nao ha nada pra processar nesta rodada.\n\nconst response = $input.first().json;\nconst issues = response.issues || [];\n\nif (issues.length === 0) {\n  return [{ json: { no_eligible_tickets: true } }];\n}\n\nreturn issues.map((issue) => ({ json: { id: issue.id } }));\n"
+      },
+      "id": "d3c3c3c3-0000-4000-8000-000000000003",
+      "name": "Separar Issues em Itens",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=http://host.docker.internal:8080/issues/{{ $json.id }}.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "include",
+              "value": "journals"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "d3c3c3c3-0000-4000-8000-000000000004",
+      "name": "GET Issue Individual (com Journals)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        760,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_REDMINE_CREDENTIAL_ID",
+          "name": "Redmine API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepara o payload de geracao/atualizacao de artefatos a partir da issue\n// individual (ja veio com journals). Roda uma vez por issue.\n\nconst AUTOMATION_NOTE_PREFIX = \"Resultado automatizado do Workflow\";\n\nconst issue = $input.first().json.issue;\nif (!issue) return [];\n\n// Aceita issues em \"New\" (1) OU \"Questions Answered\" (14) -- esta segunda\n// so e definida pelo proprio app quando o administrador confirma que\n// respondeu todas as perguntas em aberto (nao e tempo real: o app decide\n// quando o Workflow 1 deve reprocessar, nao o Workflow 1 sozinho).\n\nconst ELIGIBLE_STATUS_IDS = [1, 14];\nif (!ELIGIBLE_STATUS_IDS.includes(issue.status.id)) return [];\n\nconst aiProcessingRequired = (issue.custom_fields || [])\n  .find((f) => f.name === \"AI Processing Required\");\nif (!aiProcessingRequired || aiProcessingRequired.value !== \"1\") return [];\n\n// Le o snapshot da ultima analise (campo customizado \"Latest Artifacts\n// Snapshot\", id 5) -- vem vazio na primeira rodada.\nconst snapshotField = (issue.custom_fields || []).find((f) => f.id === 5);\nconst previousSnapshot = snapshotField && snapshotField.value ? snapshotField.value : null;\n\n// So manda os comentarios humanos ADICIONADOS DEPOIS da ultima nota da\n// automacao -- isso mantem o prompt do tamanho de \"uma rodada\", nunca do\n// historico inteiro do chamado (era a causa do erro ENAMETOOLONG).\nconst journals = issue.journals || [];\nlet lastAutomationIndex = -1;\njournals.forEach((j, idx) => {\n  if (j.notes && j.notes.trim().startsWith(AUTOMATION_NOTE_PREFIX)) {\n    lastAutomationIndex = idx;\n  }\n});\n\nconst relevantJournals = lastAutomationIndex >= 0\n  ? journals.slice(lastAutomationIndex + 1)\n  : journals;\n\nconst latestCommentsText = relevantJournals\n  .filter((j) => j.notes && j.notes.trim().length > 0 && !j.notes.trim().startsWith(AUTOMATION_NOTE_PREFIX))\n  .map((j) => {\n    const author = (j.user && j.user.name) || \"desconhecido\";\n    const date = j.created_on || \"\";\n    return `[${date}] ${author}: ${j.notes.trim()}`;\n  })\n  .join(\"\\n\\n\");\n\nreturn [\n  {\n    json: {\n      issue_id: issue.id,\n      title: issue.subject,\n      description: issue.description || \"\",\n      previous_snapshot: previousSnapshot,\n      latest_comments_text: latestCommentsText,\n    },\n  },\n];\n"
+      },
+      "id": "d3c3c3c3-0000-4000-8000-000000000005",
+      "name": "Preparar Payload de Artefatos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=http://host.docker.internal:8080/issues/{{ $json.issue_id }}.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"issue\": { \"status_id\": 2, \"notes\": \"Resultado automatizado do Workflow 1 (Geração de Artefatos via Claude Code): iniciando processamento.\" } } }}",
+        "options": {}
+      },
+      "id": "d3c3c3c3-0000-4000-8000-000000000006",
+      "name": "PUT Redmine (Marcar Under Analysis)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1240,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_REDMINE_CREDENTIAL_ID",
+          "name": "Redmine API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:3030/redmine/generate-artifacts",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"issue_id\": $('Preparar Payload de Artefatos').item.json.issue_id, \"title\": $('Preparar Payload de Artefatos').item.json.title, \"description\": $('Preparar Payload de Artefatos').item.json.description, \"previous_snapshot\": $('Preparar Payload de Artefatos').item.json.previous_snapshot, \"latest_comments_text\": $('Preparar Payload de Artefatos').item.json.latest_comments_text } }}",
+        "options": {
+          "timeout": 300000
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "id": "d3c3c3c3-0000-4000-8000-000000000007",
+      "name": "Chamar Worker (Geração de Artefatos)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1480,
+        0
+      ],
+      "notes": "Referencia o node 'Preparar Payload de Artefatos' diretamente, porque o node de PUT no meio troca o $json. Troque a x-api-key pelo valor real do .env do worker.",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_WORKER_CREDENTIAL_ID",
+          "name": "Worker API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Interpreta a resposta do endpoint /redmine/generate-artifacts, monta a\n// nota + status final da issue, e prepara os campos customizados a\n// atualizar:\n//   id 5 -- snapshot consolidado (JSON)\n//   id 6 -- contador de tentativas de desenvolvimento (reset para 0)\n//   id 7 -- perguntas em aberto, SO em PT-BR, sobrescrito a cada rodada\n//           (vazio quando nao ha nenhuma pendente). E este campo que o\n//           app/Lovable deve ler para mostrar ao administrador -- nao a\n//           nota completa, que mistura analise tecnica em ingles.\n\nconst STATUS_WAITING_FOR_ARTIFACT_APPROVAL = 4;\nconst STATUS_WAITING_FOR_ANSWERS = 13;\nconst STATUS_AUTOMATION_ERROR = 11;\n\nconst item = $input.first().json;\nconst issueId = item.issue_id;\nconst worker = item;\n\nconst failed = worker.error || typeof worker.summary === \"undefined\";\n\nconst summary = worker.summary || \"(sem summary retornado pelo worker)\";\nconst classification = worker.issue_classification || \"\";\nconst userStory = worker.user_story || \"\";\nconst acceptanceCriteria = Array.isArray(worker.acceptance_criteria) ? worker.acceptance_criteria : [];\nconst modulesAffected = Array.isArray(worker.system_modules_affected) ? worker.system_modules_affected : [];\nconst devTasks = Array.isArray(worker.development_tasks) ? worker.development_tasks : [];\nconst testCases = Array.isArray(worker.test_cases) ? worker.test_cases : [];\nconst openQuestions = Array.isArray(worker.open_questions) ? worker.open_questions : [];\nconst warnings = Array.isArray(worker.warnings) ? worker.warnings : [];\n\nconst notesLines = [\n  `Resultado automatizado do Workflow 1 (Geração de Artefatos via Claude Code):`,\n  ``,\n];\n\nif (!failed && openQuestions.length > 0) {\n  notesLines.push(\n    `Este chamado tem perguntas em aberto -- aguardando respostas do administrador antes de prosseguir para aprovação.`,\n    ``\n  );\n}\n\nnotesLines.push(`Resumo: ${summary}`);\n\nif (classification) notesLines.push(``, `Classificação: ${classification}`);\nif (userStory) notesLines.push(``, `User Story: ${userStory}`);\nif (acceptanceCriteria.length) notesLines.push(``, `Critérios de aceite:`, ...acceptanceCriteria.map((c) => `- ${c}`));\nif (modulesAffected.length) notesLines.push(``, `Módulos afetados: ${modulesAffected.join(\", \")}`);\nif (devTasks.length) notesLines.push(``, `Tarefas de desenvolvimento:`, ...devTasks.map((t) => `- ${t}`));\nif (testCases.length) notesLines.push(``, `Casos de teste:`, ...testCases.map((t) => `- ${t}`));\nif (openQuestions.length) notesLines.push(``, `Perguntas em aberto:`, ...openQuestions.map((q) => `- ${q}`));\nif (warnings.length) notesLines.push(``, `Avisos:`, ...warnings.map((w) => `- ${w}`));\nif (worker.error) notesLines.push(``, `Erro do worker: ${worker.error}`);\n\nlet statusId;\nif (failed) {\n  statusId = STATUS_AUTOMATION_ERROR;\n} else if (openQuestions.length > 0) {\n  statusId = STATUS_WAITING_FOR_ANSWERS;\n} else {\n  statusId = STATUS_WAITING_FOR_ARTIFACT_APPROVAL;\n}\n\nlet customFields = [];\nif (!failed) {\n  const snapshot = {\n    summary,\n    issue_classification: classification,\n    user_story: userStory,\n    acceptance_criteria: acceptanceCriteria,\n    system_modules_affected: modulesAffected,\n    development_tasks: devTasks,\n    test_cases: testCases,\n    open_questions: openQuestions,\n  };\n  customFields.push({ id: 5, value: JSON.stringify(snapshot) });\n  customFields.push({ id: 6, value: \"0\" });\n\n  // Campo 7: SO as perguntas, em PT-BR, sobrescrito a cada rodada.\n  // Vazio quando nao ha nenhuma pendente (limpa automaticamente quando\n  // a issue sai de \"tem perguntas\" para \"pronta pra aprovacao\").\n  const openQuestionsText = openQuestions.length\n    ? openQuestions.map((q) => `- ${q}`).join(\"\\n\")\n    : \"\";\n  customFields.push({ id: 7, value: openQuestionsText });\n}\n\nreturn [\n  {\n    json: {\n      issue_id: issueId,\n      status_id: statusId,\n      notes: notesLines.join(\"\\n\"),\n      custom_fields: customFields,\n    },\n  },\n];\n"
+      },
+      "id": "d3c3c3c3-0000-4000-8000-000000000008",
+      "name": "Interpretar Resposta dos Artefatos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1720,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=http://host.docker.internal:8080/issues/{{ $json.issue_id }}.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"issue\": Object.assign({ \"status_id\": $json.status_id, \"notes\": $json.notes }, $json.custom_fields && $json.custom_fields.length ? { \"custom_fields\": $json.custom_fields } : {}) } }}",
+        "options": {}
+      },
+      "id": "d3c3c3c3-0000-4000-8000-000000000009",
+      "name": "PUT Redmine (Atualizar Issue)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1960,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_REDMINE_CREDENTIAL_ID",
+          "name": "Redmine API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "automation_lock"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "lock_name",
+              "condition": "eq",
+              "keyValue": "global"
+            }
+          ]
+        }
+      },
+      "id": "b0a0a0a0-0000-4000-9000-000000000001",
+      "name": "Get Trava Global",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -680,
+        0
+      ],
+      "notes": "CONFIRA apos importar: selecione a tabela 'automation_lock' no dropdown."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Verifica a trava GLOBAL (Data Table \"automation_lock\", linha lock_name=\"global\").\n// Diferente da trava por chamado (campo \"Automation Status\" no Redmine, que\n// impede a MESMA issue ser pega duas vezes) -- esta impede que QUALQUER\n// combinacao dos workflows 1/2/3 rode ao mesmo tempo, ja que todos\n// compartilham o mesmo worker/sessao do Claude Code conectada ao Lovable.\n\nconst LOCK_TIMEOUT_MINUTES = 30; // bem maior que qualquer timeout de worker configurado\n\nconst row = $input.first().json;\nconst status = row.status || \"idle\";\nconst lockedAt = row.locked_at || \"\";\n\nif (status === \"running\" && lockedAt) {\n  const lockAgeMinutes = (Date.now() - new Date(lockedAt).getTime()) / 60000;\n  if (!isNaN(lockAgeMinutes) && lockAgeMinutes < LOCK_TIMEOUT_MINUTES) {\n    return []; // outro workflow esta rodando agora -- para aqui, nada foi adquirido\n  }\n  // trava velha demais (execucao anterior travou/crashou sem liberar) -- segue e assume\n}\n\nreturn [{ json: { proceed: true } }];\n"
+      },
+      "id": "b0a0a0a0-0000-4000-9000-000000000002",
+      "name": "Verificar Trava Global",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "automation_lock"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "lock_name",
+              "condition": "eq",
+              "keyValue": "global"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "running",
+            "locked_by": "Workflow 1 - Geração de Artefatos",
+            "locked_at": "={{ $now.toISO() }}"
+          }
+        }
+      },
+      "id": "b0a0a0a0-0000-4000-9000-000000000003",
+      "name": "Adquirir Trava Global",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -200,
+        0
+      ],
+      "notes": "CONFIRA apos importar: selecione a tabela 'automation_lock' no dropdown e confirme o mapeamento das colunas (status/locked_by/locked_at)."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-no-eligible-tickets",
+              "leftValue": "={{ $json.no_eligible_tickets }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b0a0a0a0-0000-4000-9000-000000000004",
+      "name": "Não Há Chamados Elegíveis?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        760,
+        220
+      ],
+      "notes": "TRUE (saida 0) = nao achou nada pra processar, pula direto pra liberar a trava. FALSE (saida 1) = segue o processamento normal."
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "automation_lock"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "lock_name",
+              "condition": "eq",
+              "keyValue": "global"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "idle",
+            "locked_by": ""
+          }
+        }
+      },
+      "id": "b0a0a0a0-0000-4000-9000-000000000005",
+      "name": "Liberar Trava Global",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        2200,
+        0
+      ],
+      "notes": "CONFIRA apos importar: selecione a tabela 'automation_lock' no dropdown."
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "b9000001",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -940,
+        -220
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Trava Global",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GET Redmine Issues (New + AI Required)": {
+      "main": [
+        [
+          {
+            "node": "Separar Issues em Itens",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Separar Issues em Itens": {
+      "main": [
+        [
+          {
+            "node": "Não Há Chamados Elegíveis?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GET Issue Individual (com Journals)": {
+      "main": [
+        [
+          {
+            "node": "Preparar Payload de Artefatos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar Payload de Artefatos": {
+      "main": [
+        [
+          {
+            "node": "PUT Redmine (Marcar Under Analysis)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PUT Redmine (Marcar Under Analysis)": {
+      "main": [
+        [
+          {
+            "node": "Chamar Worker (Geração de Artefatos)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chamar Worker (Geração de Artefatos)": {
+      "main": [
+        [
+          {
+            "node": "Interpretar Resposta dos Artefatos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Interpretar Resposta dos Artefatos": {
+      "main": [
+        [
+          {
+            "node": "PUT Redmine (Atualizar Issue)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Trava Global": {
+      "main": [
+        [
+          {
+            "node": "Verificar Trava Global",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verificar Trava Global": {
+      "main": [
+        [
+          {
+            "node": "Adquirir Trava Global",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Adquirir Trava Global": {
+      "main": [
+        [
+          {
+            "node": "GET Redmine Issues (New + AI Required)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Não Há Chamados Elegíveis?": {
+      "main": [
+        [
+          {
+            "node": "Liberar Trava Global",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "GET Issue Individual (com Journals)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PUT Redmine (Atualizar Issue)": {
+      "main": [
+        [
+          {
+            "node": "Liberar Trava Global",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Trava Global",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "tcc-workflow-1-claude"
+  }
+}

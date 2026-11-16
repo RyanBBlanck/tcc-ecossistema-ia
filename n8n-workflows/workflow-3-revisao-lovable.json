@@ -1,0 +1,547 @@
+{
+  "name": "TCC - Workflow 3 - Revisao Automatizada (Lovable)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "c2b2b2b2-0000-4000-8000-000000000001",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        40,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://host.docker.internal:8080/issues.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "status_id",
+              "value": "6"
+            },
+            {
+              "name": "limit",
+              "value": "100"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c2b2b2b2-0000-4000-8000-000000000002",
+      "name": "GET Redmine Issues (Waiting for Tests)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        280,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_REDMINE_CREDENTIAL_ID",
+          "name": "Redmine API"
+        }
+      },
+      "notes": "status_id=6 = Waiting for Tests. Nao precisa checar Artifacts Approved? de novo, esse gate ja foi passado no Workflow 2."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Transforma o array de issues em itens individuais do n8n, um por issue,\n// pra que o proximo node (GET individual) rode uma vez por issue.\n// Se nao houver nenhuma issue elegivel, sinaliza isso explicitamente\n// (em vez de simplesmente nao produzir nada), pra permitir liberar a\n// trava global mesmo quando nao ha nada pra processar nesta rodada.\n\nconst response = $input.first().json;\nconst issues = response.issues || [];\n\nif (issues.length === 0) {\n  return [{ json: { no_eligible_tickets: true } }];\n}\n\nreturn issues.map((issue) => ({ json: { id: issue.id } }));\n"
+      },
+      "id": "c2b2b2b2-0000-4000-8000-000000000003",
+      "name": "Separar Issues em Itens",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=http://host.docker.internal:8080/issues/{{ $json.id }}.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "include",
+              "value": "journals"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c2b2b2b2-0000-4000-8000-000000000004",
+      "name": "GET Issue Individual (com Journals)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        760,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_REDMINE_CREDENTIAL_ID",
+          "name": "Redmine API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filtra a issue individual (ja veio com journals) e prepara o payload\n// para a revisao. Este node roda uma vez por issue.\n\n// >>> AJUSTE AQUI: mesmo nome de projeto usado no Workflow 2.\nconst PROJECT_NAME = \"NOME_DO_SEU_PROJETO_NO_LOVABLE\";\n\nconst issue = $input.first().json.issue;\nif (!issue) return [];\n\n// Seguranca extra: revalida no codigo, nao confia so no filtro da URL.\nif (issue.status.id !== 6) return [];\n\n// Pega a ultima nota HUMANA (ignora notas que a propria automacao gerou,\n// senao a revisao acabaria comparando o projeto contra o proprio resumo\n// da IA em vez dos requisitos aprovados de verdade).\nconst AUTOMATION_NOTE_PREFIX = \"Resultado automatizado do Workflow\";\nconst journals = issue.journals || [];\nconst notesJournals = journals.filter(\n  (j) => j.notes && j.notes.trim().length > 0 && !j.notes.trim().startsWith(AUTOMATION_NOTE_PREFIX)\n);\nconst latestNote = notesJournals.length\n  ? notesJournals[notesJournals.length - 1].notes\n  : null;\n\nif (!latestNote) return [];\n\nreturn [\n  {\n    json: {\n      issue_id: issue.id,\n      project_name: PROJECT_NAME,\n      title: issue.subject,\n      requirements: latestNote,\n    },\n  },\n];\n"
+      },
+      "id": "c2b2b2b2-0000-4000-8000-000000000005",
+      "name": "Preparar Payload de Revisão",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=http://host.docker.internal:8080/issues/{{ $json.issue_id }}.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"issue\": { \"status_id\": 7, \"notes\": \"Resultado automatizado do Workflow 3 (Revisao via Claude Code + Lovable MCP): iniciando revisão.\" } } }}",
+        "options": {}
+      },
+      "id": "c2b2b2b2-0000-4000-8000-000000000006",
+      "name": "PUT Redmine (Marcar Under Testing)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1240,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_REDMINE_CREDENTIAL_ID",
+          "name": "Redmine API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:3030/lovable/review",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"issue_id\": $('Preparar Payload de Revisão').item.json.issue_id, \"project_name\": $('Preparar Payload de Revisão').item.json.project_name, \"title\": $('Preparar Payload de Revisão').item.json.title, \"requirements\": $('Preparar Payload de Revisão').item.json.requirements } }}",
+        "options": {
+          "timeout": 660000
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "id": "c2b2b2b2-0000-4000-8000-000000000007",
+      "name": "Chamar Worker (Revisão)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1480,
+        0
+      ],
+      "notes": "Referencia o node 'Preparar Payload de Revisão' diretamente (nao o item anterior), porque o node de PUT no meio troca o $json pela resposta do Redmine. Troque a x-api-key pelo valor real do .env do worker.",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_WORKER_CREDENTIAL_ID",
+          "name": "Worker API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Interpreta a resposta do endpoint /lovable/review e monta o payload de\n// atualizacao do Redmine.\n\nconst STATUS_MAP = {\n  \"New\": 1,\n  \"Under Analysis\": 2,\n  \"Artifacts Generated\": 3,\n  \"Waiting for Artifact Approval\": 4,\n  \"Under Development\": 5,\n  \"Waiting for Tests\": 6,\n  \"Under Testing\": 7,\n  \"Waiting for Tests Approval\": 8,\n  \"Ready for Publishing\": 9,\n  \"Published\": 10,\n  \"Automation Error\": 11,\n};\n\nconst item = $input.first().json;\nconst issueId = item.issue_id;\nconst worker = item; // resposta do worker ja vem \"achatada\" no body\n\nconst approved = worker.approved === true;\nconst summary = worker.summary || \"(sem summary retornado pelo worker)\";\nconst concerns = Array.isArray(worker.concerns) ? worker.concerns : [];\nconst feedback = worker.feedback_for_developer || \"\";\nconst warnings = Array.isArray(worker.warnings) ? worker.warnings : [];\nconst nextStatusName = worker.recommended_status || null;\n\nlet statusId = nextStatusName ? STATUS_MAP[nextStatusName] : undefined;\nif (statusId === undefined || statusId === null) {\n  // Rede de seguranca: se o Claude nao devolveu um status valido, usa um\n  // default seguro em vez de deixar a issue parada.\n  statusId = approved ? STATUS_MAP[\"Waiting for Tests Approval\"] : STATUS_MAP[\"Under Development\"];\n}\nif (worker.error) {\n  statusId = STATUS_MAP[\"Automation Error\"];\n}\n\nconst notesLines = [\n  `Resultado automatizado do Workflow 3 (Revisao via Claude Code + Lovable MCP):`,\n  ``,\n  `Aprovado: ${approved}`,\n  `Resumo: ${summary}`,\n];\n\nif (concerns.length) {\n  notesLines.push(``, `Pontos de atencao:`, ...concerns.map((c) => `- ${c}`));\n}\nif (!approved && feedback) {\n  notesLines.push(``, `Ajustes necessarios (para o proximo ciclo de desenvolvimento):`, feedback);\n}\nif (warnings.length) {\n  notesLines.push(``, `Avisos:`, ...warnings.map((w) => `- ${w}`));\n}\nif (worker.error) {\n  notesLines.push(``, `Erro do worker: ${worker.error}`);\n}\n\nreturn [\n  {\n    json: {\n      issue_id: issueId,\n      status_id: statusId,\n      notes: notesLines.join(\"\\n\"),\n    },\n  },\n];\n"
+      },
+      "id": "c2b2b2b2-0000-4000-8000-000000000008",
+      "name": "Interpretar Resposta da Revisão",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1720,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=http://host.docker.internal:8080/issues/{{ $json.issue_id }}.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"issue\": { \"status_id\": $json.status_id, \"notes\": $json.notes } } }}",
+        "options": {}
+      },
+      "id": "c2b2b2b2-0000-4000-8000-000000000009",
+      "name": "PUT Redmine (Atualizar Issue)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1960,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_REDMINE_CREDENTIAL_ID",
+          "name": "Redmine API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "automation_lock"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "lock_name",
+              "condition": "eq",
+              "keyValue": "global"
+            }
+          ]
+        }
+      },
+      "id": "b0a0a0a0-0000-4000-9000-000000000001",
+      "name": "Get Trava Global",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -680,
+        0
+      ],
+      "notes": "CONFIRA apos importar: selecione a tabela 'automation_lock' no dropdown."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Verifica a trava GLOBAL (Data Table \"automation_lock\", linha lock_name=\"global\").\n// Diferente da trava por chamado (campo \"Automation Status\" no Redmine, que\n// impede a MESMA issue ser pega duas vezes) -- esta impede que QUALQUER\n// combinacao dos workflows 1/2/3 rode ao mesmo tempo, ja que todos\n// compartilham o mesmo worker/sessao do Claude Code conectada ao Lovable.\n\nconst LOCK_TIMEOUT_MINUTES = 30; // bem maior que qualquer timeout de worker configurado\n\nconst row = $input.first().json;\nconst status = row.status || \"idle\";\nconst lockedAt = row.locked_at || \"\";\n\nif (status === \"running\" && lockedAt) {\n  const lockAgeMinutes = (Date.now() - new Date(lockedAt).getTime()) / 60000;\n  if (!isNaN(lockAgeMinutes) && lockAgeMinutes < LOCK_TIMEOUT_MINUTES) {\n    return []; // outro workflow esta rodando agora -- para aqui, nada foi adquirido\n  }\n  // trava velha demais (execucao anterior travou/crashou sem liberar) -- segue e assume\n}\n\nreturn [{ json: { proceed: true } }];\n"
+      },
+      "id": "b0a0a0a0-0000-4000-9000-000000000002",
+      "name": "Verificar Trava Global",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "automation_lock"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "lock_name",
+              "condition": "eq",
+              "keyValue": "global"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "running",
+            "locked_by": "Workflow 3 - Review Automation",
+            "locked_at": "={{ $now.toISO() }}"
+          }
+        }
+      },
+      "id": "b0a0a0a0-0000-4000-9000-000000000003",
+      "name": "Adquirir Trava Global",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -200,
+        0
+      ],
+      "notes": "CONFIRA apos importar: selecione a tabela 'automation_lock' no dropdown e confirme o mapeamento das colunas (status/locked_by/locked_at)."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-no-eligible-tickets",
+              "leftValue": "={{ $json.no_eligible_tickets }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b0a0a0a0-0000-4000-9000-000000000004",
+      "name": "Não Há Chamados Elegíveis?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        760,
+        220
+      ],
+      "notes": "TRUE (saida 0) = nao achou nada pra processar, pula direto pra liberar a trava. FALSE (saida 1) = segue o processamento normal."
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "automation_lock"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "lock_name",
+              "condition": "eq",
+              "keyValue": "global"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "idle",
+            "locked_by": ""
+          }
+        }
+      },
+      "id": "b0a0a0a0-0000-4000-9000-000000000005",
+      "name": "Liberar Trava Global",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        2200,
+        0
+      ],
+      "notes": "CONFIRA apos importar: selecione a tabela 'automation_lock' no dropdown."
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "b9000003",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -940,
+        -220
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Trava Global",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GET Redmine Issues (Waiting for Tests)": {
+      "main": [
+        [
+          {
+            "node": "Separar Issues em Itens",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Separar Issues em Itens": {
+      "main": [
+        [
+          {
+            "node": "Não Há Chamados Elegíveis?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GET Issue Individual (com Journals)": {
+      "main": [
+        [
+          {
+            "node": "Preparar Payload de Revisão",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar Payload de Revisão": {
+      "main": [
+        [
+          {
+            "node": "PUT Redmine (Marcar Under Testing)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PUT Redmine (Marcar Under Testing)": {
+      "main": [
+        [
+          {
+            "node": "Chamar Worker (Revisão)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chamar Worker (Revisão)": {
+      "main": [
+        [
+          {
+            "node": "Interpretar Resposta da Revisão",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Interpretar Resposta da Revisão": {
+      "main": [
+        [
+          {
+            "node": "PUT Redmine (Atualizar Issue)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Trava Global": {
+      "main": [
+        [
+          {
+            "node": "Verificar Trava Global",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verificar Trava Global": {
+      "main": [
+        [
+          {
+            "node": "Adquirir Trava Global",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Adquirir Trava Global": {
+      "main": [
+        [
+          {
+            "node": "GET Redmine Issues (Waiting for Tests)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Não Há Chamados Elegíveis?": {
+      "main": [
+        [
+          {
+            "node": "Liberar Trava Global",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "GET Issue Individual (com Journals)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PUT Redmine (Atualizar Issue)": {
+      "main": [
+        [
+          {
+            "node": "Liberar Trava Global",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Trava Global",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "tcc-workflow-3"
+  }
+}

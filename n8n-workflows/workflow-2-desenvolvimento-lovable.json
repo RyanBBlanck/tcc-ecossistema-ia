@@ -1,0 +1,648 @@
+{
+  "name": "TCC - Workflow 2 - Development Automation (Lovable)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "7b409033-f208-4a3d-b241-5654e809de34",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "automation_lock"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "lock_name",
+              "keyValue": "global"
+            }
+          ]
+        }
+      },
+      "id": "a1aa8baa-93f8-435f-96b7-84224e90b1f0",
+      "name": "Get Trava Global",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Verifica a trava GLOBAL (Data Table \"automation_lock\", linha lock_name=\"global\").\n// Impede que os workflows 1/2/3 rodem ao mesmo tempo (worker/sessao unicos).\n\nconst LOCK_TIMEOUT_MINUTES = 30;\n\nconst row = $input.first().json;\nconst status = row.status || \"idle\";\nconst lockedAt = row.locked_at || \"\";\n\nif (status === \"running\" && lockedAt) {\n  const lockAgeMinutes = (Date.now() - new Date(lockedAt).getTime()) / 60000;\n  if (!isNaN(lockAgeMinutes) && lockAgeMinutes < LOCK_TIMEOUT_MINUTES) {\n    return []; // outro workflow esta rodando -- para aqui, nada foi adquirido\n  }\n  // trava velha demais (execucao anterior travou sem liberar) -- segue e assume\n}\n\nreturn [{ json: { proceed: true } }];\n"
+      },
+      "id": "b6332d23-8bc4-49c2-a536-3bbad73e73bb",
+      "name": "Verificar Trava Global",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "automation_lock"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "lock_name",
+              "keyValue": "global"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "running",
+            "locked_by": "Workflow 2 - Development Automation",
+            "locked_at": "={{ $now.toISO() }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "d9ffd034-a8b6-4567-a662-5adb34d229c6",
+      "name": "Adquirir Trava Global",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://host.docker.internal:8080/issues.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "status_id",
+              "value": "15"
+            },
+            {
+              "name": "limit",
+              "value": "100"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "e63dbfef-0a4c-4e92-a1dd-a856ed07d386",
+      "name": "GET Redmine Issues (Waiting for Development)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_REDMINE_CREDENTIAL_ID",
+          "name": "Redmine API"
+        }
+      },
+      "notes": "status_id=15 = Waiting for Development (colocado manualmente por um humano apos aprovar os artefatos)."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Transforma o array de issues em itens individuais do n8n, um por issue.\n// Se nao houver nenhuma issue, sinaliza explicitamente para liberar a trava global.\n\nconst response = $input.first().json;\nconst issues = response.issues || [];\n\nif (issues.length === 0) {\n  return [{ json: { no_eligible_tickets: true } }];\n}\n\nreturn issues.map((issue) => ({ json: { id: issue.id } }));\n"
+      },
+      "id": "d919dc80-963e-4733-ad5c-f1b3f3407158",
+      "name": "Separar Issues em Itens",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond-no-eligible-tickets",
+              "leftValue": "={{ $json.no_eligible_tickets }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "2ef35bc3-b14a-4dd8-8f51-130395c846fe",
+      "name": "Não Há Chamados Elegíveis?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        300
+      ],
+      "notes": "TRUE = nada pra processar, libera a trava. FALSE = segue."
+    },
+    {
+      "parameters": {
+        "url": "=http://host.docker.internal:8080/issues/{{ $json.id }}.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "include",
+              "value": "journals"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a114e8de-d31f-4d13-b230-82d22ce3fec7",
+      "name": "GET Issue Individual (com Journals)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        460
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_REDMINE_CREDENTIAL_ID",
+          "name": "Redmine API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Seleciona UM chamado elegivel por execucao (o worker processa um por vez,\n// protegido pela trava global) e prepara o payload para o worker.\n//\n// Elegivel = status \"Waiting for Development\" (15), colocado MANUALMENTE por\n// um humano depois de revisar e aprovar os artefatos do Workflow 1. Esse\n// status substitui o antigo campo customizado \"Artifacts Approved?\".\n//\n// Nunca retorna lista vazia: se nenhum chamado for valido, retorna\n// { valid: false }, para que a trava global seja liberada.\n\nconst PROJECT_NAME = \"NOME_DO_SEU_PROJETO_NO_LOVABLE\";\nconst STATUS_WAITING_FOR_DEVELOPMENT = 15;\nconst AUTOMATION_NOTE_PREFIX = \"Resultado automatizado do Workflow\";\nconst REVIEW_NOTE_PREFIX = \"Resultado automatizado do Workflow 3\";\n\nfor (const item of $input.all()) {\n  const issue = item.json.issue;\n  if (!issue || !issue.status || issue.status.id !== STATUS_WAITING_FOR_DEVELOPMENT) continue;\n\n  const journals = issue.journals || [];\n  const customFields = issue.custom_fields || [];\n\n  // Contador de tentativas (campo id 6): zerado pelo Workflow 1 a cada novo\n  // snapshot de requisitos, incrementado pelo Workflow 2 a cada tentativa.\n  const attemptsField = customFields.find((f) => f.id === 6);\n  const devAttempts = attemptsField && attemptsField.value\n    ? (parseInt(attemptsField.value, 10) || 0)\n    : 0;\n\n  // Fonte principal dos requisitos: snapshot consolidado do Workflow 1 (campo id 5).\n  let requirementsText = null;\n  const snapshotField = customFields.find((f) => f.id === 5);\n  if (snapshotField && snapshotField.value) {\n    try {\n      const snapshot = JSON.parse(snapshotField.value);\n      const lines = [];\n      if (snapshot.user_story) lines.push(`User Story: ${snapshot.user_story}`);\n      if (snapshot.summary) lines.push(``, `Resumo: ${snapshot.summary}`);\n      if (Array.isArray(snapshot.acceptance_criteria) && snapshot.acceptance_criteria.length) {\n        lines.push(``, `Critérios de aceite:`, ...snapshot.acceptance_criteria.map((c) => `- ${c}`));\n      }\n      if (Array.isArray(snapshot.development_tasks) && snapshot.development_tasks.length) {\n        lines.push(``, `Tarefas de desenvolvimento:`, ...snapshot.development_tasks.map((t) => `- ${t}`));\n      }\n      if (Array.isArray(snapshot.system_modules_affected) && snapshot.system_modules_affected.length) {\n        lines.push(``, `Módulos afetados: ${snapshot.system_modules_affected.join(\", \")}`);\n      }\n      requirementsText = lines.join(\"\\n\").trim();\n    } catch (e) {\n      requirementsText = null;\n    }\n  }\n\n  // Fallback para chamados antigos, sem snapshot: ultima nota humana.\n  if (!requirementsText) {\n    const humanNotes = journals.filter(\n      (j) => j.notes && j.notes.trim().length > 0 && !j.notes.trim().startsWith(AUTOMATION_NOTE_PREFIX)\n    );\n    requirementsText = humanNotes.length ? humanNotes[humanNotes.length - 1].notes : null;\n  }\n\n  if (!requirementsText) continue;\n\n  // Feedback da ultima revisao reprovada (Workflow 3), se for um retrabalho.\n  const reviewNotes = journals.filter(\n    (j) => j.notes && j.notes.trim().startsWith(REVIEW_NOTE_PREFIX)\n  );\n  const previousReviewFeedback = reviewNotes.length\n    ? reviewNotes[reviewNotes.length - 1].notes\n    : null;\n\n  return [\n    {\n      json: {\n        valid: true,\n        issue_id: issue.id,\n        project_name: PROJECT_NAME,\n        title: issue.subject,\n        requirements: requirementsText,\n        previous_review_feedback: previousReviewFeedback,\n        dev_attempts: devAttempts,\n      },\n    },\n  ];\n}\n\nreturn [{ json: { valid: false } }];\n"
+      },
+      "id": "6c552834-785b-474c-a5dd-4a5d791f589f",
+      "name": "Filtrar e Preparar Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond-valid-ticket",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f1c2d3e4-0000-4000-8000-00000000c001",
+      "name": "Há Chamado Válido?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        460
+      ],
+      "notes": "TRUE = segue o desenvolvimento. FALSE = nenhum chamado valido, libera a trava."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond-dev-attempts-limit",
+              "leftValue": "={{ $json.dev_attempts }}",
+              "rightValue": 3,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7d930cca-8362-4e89-bd4c-689a2c85cf9b",
+      "name": "Verificar Limite de Tentativas",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        620
+      ],
+      "notes": "TRUE = limite atingido (>=3), vai pra Automation Error sem chamar o worker. FALSE = segue."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Limite de tentativas de desenvolvimento atingido -- interrompe a automacao\n// e pede verificacao manual (protecao contra loop Workflow 2 <-> Workflow 3\n// e contra gasto descontrolado de cota).\n\nconst MAX_ATTEMPTS = 3; // mantenha igual ao valor do IF \"Verificar Limite de Tentativas\"\n\nconst item = $input.first().json;\n\nconst notesLines = [\n  `Resultado automatizado do Workflow 2 (Claude Code + Lovable MCP):`,\n  ``,\n  `Limite de ${MAX_ATTEMPTS} tentativas de desenvolvimento atingido sem sucesso (Development Attempts = ${item.dev_attempts}).`,\n  `A automação foi interrompida propositalmente -- revisão manual necessária antes de continuar.`,\n  ``,\n  `Para retomar: verifique o histórico de notas de revisão do Workflow 3 nesta issue, corrija ` +\n    `manualmente o que for necessário (ou ajuste os requisitos), redefina o campo ` +\n    `\"Development Attempts\" para 0, e mude o status para \"Waiting for Development\".`,\n];\n\nreturn [\n  {\n    json: {\n      issue_id: item.issue_id,\n      status_id: 11, // Automation Error\n      notes: notesLines.join(\"\\n\"),\n      custom_fields: [],\n    },\n  },\n];\n"
+      },
+      "id": "0f97ea02-e860-44bf-be54-cd74aa41aa23",
+      "name": "Montar Erro de Limite Atingido",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2420,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=http://host.docker.internal:8080/issues/{{ $json.issue_id }}.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"issue\": { \"status_id\": 5, \"notes\": \"Resultado automatizado do Workflow 2 (Claude Code + Lovable MCP): iniciando desenvolvimento.\" } } }}",
+        "options": {}
+      },
+      "id": "f1c2d3e4-0000-4000-8000-00000000c002",
+      "name": "PUT Redmine (Marcar Under Development)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2420,
+        720
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_REDMINE_CREDENTIAL_ID",
+          "name": "Redmine API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:3030/lovable/develop",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"issue_id\": $('Filtrar e Preparar Payload').item.json.issue_id, \"project_name\": $('Filtrar e Preparar Payload').item.json.project_name, \"title\": $('Filtrar e Preparar Payload').item.json.title, \"requirements\": $('Filtrar e Preparar Payload').item.json.requirements, \"previous_review_feedback\": $('Filtrar e Preparar Payload').item.json.previous_review_feedback } }}",
+        "options": {
+          "timeout": 1500000
+        }
+      },
+      "id": "8c242a10-ef94-4ebd-865e-7f33f7e3ed1e",
+      "name": "Chamar Worker (Claude Code + Lovable)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2640,
+        720
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_WORKER_CREDENTIAL_ID",
+          "name": "Worker API Key"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Continua em caso de erro: falhas do worker vao para Automation Error em vez de travar o chamado. Timeout 25 min (acima dos 20 min do worker)."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Interpreta a resposta do worker (ou a falha da chamada) e monta a\n// atualizacao do Redmine. Incrementa o contador de tentativas (campo id 6).\n//\n// O node \"Chamar Worker\" esta configurado para continuar em caso de erro:\n// se o worker falhar (ex: sessao OAuth expirada, timeout), o chamado vai\n// para \"Automation Error\" com o erro na nota, em vez de ficar preso em\n// \"Under Development\".\n\nconst STATUS_MAP = {\n  \"New\": 1,\n  \"Under Analysis\": 2,\n  \"Artifacts Generated\": 3,\n  \"Waiting for Artifact Approval\": 4,\n  \"Under Development\": 5,\n  \"Waiting for Tests\": 6,\n  \"Under Testing\": 7,\n  \"Waiting for Tests Approval\": 8,\n  \"Ready for Publishing\": 9,\n  \"Published\": 10,\n  \"Automation Error\": 11,\n  \"Waiting for Answers\": 13,\n  \"Questions Answered\": 14,\n  \"Waiting for Development\": 15,\n};\n\nconst payload = $('Filtrar e Preparar Payload').item.json;\nconst issueId = payload.issue_id;\nconst worker = $input.first().json;\n\nlet workerError = null;\nif (worker.error) {\n  workerError = typeof worker.error === \"string\"\n    ? worker.error\n    : (worker.error.message || JSON.stringify(worker.error));\n}\n\nconst success = !workerError && worker.success === true;\nconst summary = worker.summary || \"(sem summary retornado pelo worker)\";\nconst changedFiles = Array.isArray(worker.changed_files) ? worker.changed_files : [];\nconst diffSummary = worker.diff_summary || \"\";\nconst warnings = Array.isArray(worker.warnings) ? worker.warnings : [];\nconst nextStatusName = worker.next_recommended_status || null;\n\nlet statusId = (!workerError && nextStatusName) ? STATUS_MAP[nextStatusName] : undefined;\nif (statusId === undefined || statusId === null) {\n  statusId = success ? STATUS_MAP[\"Waiting for Tests\"] : STATUS_MAP[\"Automation Error\"];\n}\n// \"Under Development\" e \"Waiting for Development\" nunca sao destinos validos\n// ao fim do Workflow 2 (evita o chamado ficar preso ou entrar em loop).\nif (statusId === STATUS_MAP[\"Under Development\"] || statusId === STATUS_MAP[\"Waiting for Development\"]) {\n  statusId = success ? STATUS_MAP[\"Waiting for Tests\"] : STATUS_MAP[\"Automation Error\"];\n}\n\nconst notesLines = [\n  `Resultado automatizado do Workflow 2 (Claude Code + Lovable MCP):`,\n  ``,\n  `Sucesso: ${success}`,\n];\n\nif (workerError) {\n  notesLines.push(`Erro ao chamar o worker: ${workerError}`);\n} else {\n  notesLines.push(`Resumo: ${summary}`);\n}\nif (changedFiles.length) {\n  notesLines.push(``, `Arquivos alterados:`, ...changedFiles.map((f) => `- ${f}`));\n}\nif (diffSummary) {\n  notesLines.push(``, `Diff: ${diffSummary}`);\n}\nif (warnings.length) {\n  notesLines.push(``, `Avisos:`, ...warnings.map((w) => `- ${w}`));\n}\n\nconst newAttempts = (payload.dev_attempts || 0) + 1;\nnotesLines.push(``, `Tentativa de desenvolvimento nº ${newAttempts}.`);\n\nreturn [\n  {\n    json: {\n      issue_id: issueId,\n      status_id: statusId,\n      notes: notesLines.join(\"\\n\"),\n      custom_fields: [{ id: 6, value: String(newAttempts) }],\n    },\n  },\n];\n"
+      },
+      "id": "8831f2b5-e6b8-45f7-96eb-13236822131d",
+      "name": "Interpretar Resposta do Worker",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2860,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=http://host.docker.internal:8080/issues/{{ $json.issue_id }}.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"issue\": Object.assign({ \"status_id\": $json.status_id, \"notes\": $json.notes }, $json.custom_fields && $json.custom_fields.length ? { \"custom_fields\": $json.custom_fields } : {}) } }}",
+        "options": {}
+      },
+      "id": "fdfe0a3f-e33b-419f-94a2-d498e00f6635",
+      "name": "PUT Redmine (Atualizar Issue)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3080,
+        620
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_REDMINE_CREDENTIAL_ID",
+          "name": "Redmine API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "automation_lock"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "lock_name",
+              "keyValue": "global"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "idle",
+            "locked_by": ""
+          }
+        },
+        "options": {}
+      },
+      "id": "05f34d94-7ca9-4160-8976-14660f6718a8",
+      "name": "Liberar Trava Global",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        3300,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Trava Global",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Trava Global": {
+      "main": [
+        [
+          {
+            "node": "Verificar Trava Global",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verificar Trava Global": {
+      "main": [
+        [
+          {
+            "node": "Adquirir Trava Global",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Adquirir Trava Global": {
+      "main": [
+        [
+          {
+            "node": "GET Redmine Issues (Waiting for Development)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GET Redmine Issues (Waiting for Development)": {
+      "main": [
+        [
+          {
+            "node": "Separar Issues em Itens",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Separar Issues em Itens": {
+      "main": [
+        [
+          {
+            "node": "Não Há Chamados Elegíveis?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Não Há Chamados Elegíveis?": {
+      "main": [
+        [
+          {
+            "node": "Liberar Trava Global",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "GET Issue Individual (com Journals)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GET Issue Individual (com Journals)": {
+      "main": [
+        [
+          {
+            "node": "Filtrar e Preparar Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filtrar e Preparar Payload": {
+      "main": [
+        [
+          {
+            "node": "Há Chamado Válido?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Há Chamado Válido?": {
+      "main": [
+        [
+          {
+            "node": "Verificar Limite de Tentativas",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Liberar Trava Global",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verificar Limite de Tentativas": {
+      "main": [
+        [
+          {
+            "node": "Montar Erro de Limite Atingido",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "PUT Redmine (Marcar Under Development)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar Erro de Limite Atingido": {
+      "main": [
+        [
+          {
+            "node": "PUT Redmine (Atualizar Issue)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PUT Redmine (Marcar Under Development)": {
+      "main": [
+        [
+          {
+            "node": "Chamar Worker (Claude Code + Lovable)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chamar Worker (Claude Code + Lovable)": {
+      "main": [
+        [
+          {
+            "node": "Interpretar Resposta do Worker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Interpretar Resposta do Worker": {
+      "main": [
+        [
+          {
+            "node": "PUT Redmine (Atualizar Issue)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PUT Redmine (Atualizar Issue)": {
+      "main": [
+        [
+          {
+            "node": "Liberar Trava Global",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "tcc-workflow-2"
+  }
+}
