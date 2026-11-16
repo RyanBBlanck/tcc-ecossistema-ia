@@ -28,11 +28,13 @@ New ──WF1──> Under Analysis ──┬──> Waiting for Answers ──(
                                   (humano aprova)
                                           ▼
                               Waiting for Development ──WF2──> Under Development ──> Waiting for Tests
-                                                                                          │
-                                                                                         WF3
-                                                                                          ▼
-                                                    Under Testing ──┬──> Waiting for Tests Approval  (aprovado)
-                                                                    └──> Under Development + feedback (reprovado)
+                                          ▲                                               │
+                                          │                                              WF3
+                                          │                                               ▼
+                                          │                         Under Testing ──┬──> Waiting for Tests Approval  (aprovado)
+                                          └─────────── reprovado + feedback ────────┘
+
+Limite de 3 tentativas de desenvolvimento ──> Automation Error (revisão manual)
 
 Qualquer falha do worker ──> Automation Error
 ```
@@ -63,11 +65,11 @@ Qualquer falha do worker ──> Automation Error
 ### Workflow 3 — Revisão automatizada (`/lovable/review`)
 
 1. Busca chamados em **Waiting for Tests** e marca como **Under Testing**.
-2. Envia ao worker os requisitos, que vêm da última nota humana do chamado.
+2. Envia ao worker **tudo o que as pessoas pediram no chamado**: a descrição original e **todas as notas humanas**, em ordem cronológica (respostas às perguntas da IA, ajustes de escopo, mudanças de decisão). As notas geradas pela automação ficam de fora. O agente primeiro consolida a lista final de requisitos; quando dois comentários se contradizem, vale o mais recente.
 3. O Claude Code faz uma **revisão estática** do código e do diff no Lovable, com **acesso somente leitura**. A ferramenta de envio de mensagens não é liberada, então a revisão não consegue alterar o projeto. Ele verifica se os requisitos foram implementados por completo e se houve alterações fora do escopo. Mudanças feitas pela própria plataforma, como migrações Drizzle e arquivos gerados, não são tratadas como problema.
 4. Resultado:
    - **aprovado**: o chamado vai para **Waiting for Tests Approval**, para aprovação humana;
-   - **reprovado**: o chamado volta para **Under Development**, com uma nota de "ajustes necessários" que o Workflow 2 usa no próximo ciclo;
+   - **reprovado**: o chamado volta para **Waiting for Development**, com uma nota de "ajustes necessários". Na rodada seguinte, o Workflow 2 pega o chamado automaticamente e usa esse feedback no retrabalho. O limite de 3 tentativas do Workflow 2 impede um loop infinito;
    - **falha**: o chamado vai para **Automation Error**.
 
 ### Workflow 4 — Error handler

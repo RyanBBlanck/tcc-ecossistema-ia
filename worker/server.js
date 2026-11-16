@@ -200,10 +200,15 @@ function buildReviewPrompt({ issue_id, project_name, title, requirements }) {
     `Issue ID: ${issue_id}`,
     `Title: ${title || '(no title provided)'}`,
     '',
-    'Approved requirements that should have been implemented:',
+    'What the humans asked for in this ticket (usually the original description followed by EVERY human ' +
+      'comment, in chronological order). Read all of it: later comments may add requirements, answer ' +
+      'questions, narrow the scope or change earlier decisions. When two comments conflict, the most ' +
+      'recent one wins. Comments that are only approvals or acknowledgements add no requirement:',
     reqLines,
     '',
     'Instructions:',
+    '- First, consolidate the final list of requirements from everything above. Then review the ' +
+      'project against that consolidated list, not against only the first or the last message.',
     '- Inspect the relevant project files (list_files / read_file) and the latest diff ' +
       '(get_diff) to check whether the approved requirements above were actually implemented, ' +
       'completely and correctly.',
@@ -229,7 +234,7 @@ function buildReviewPrompt({ issue_id, project_name, title, requirements }) {
     '      Use an empty string when approved=true.',
     '  - recommended_status (string) — MUST be exactly one of these literal values, no other text:',
     '      "Waiting for Tests Approval"   (review passed, ready for human approval)',
-    '      "Under Development"            (review failed, needs rework)',
+    '      "Waiting for Development"      (review failed, needs rework)',
     '      "Automation Error"             (review could not be completed)',
   ].join('\n');
 }

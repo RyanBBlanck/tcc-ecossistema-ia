@@ -81,6 +81,11 @@ Resposta: `success`, `lovable_project_id`, `summary`, `changed_files`,
 
 Body: `issue_id`, `project_name`, `title`, `requirements`.
 
+O Workflow 3 envia em `requirements` a descrição do chamado seguida de todos
+os comentários humanos, em ordem cronológica. O agente primeiro consolida a
+lista final de requisitos (o comentário mais recente vale quando há conflito)
+e depois revisa o projeto contra essa lista.
+
 Revisão **estática** do código e do diff (o app não é executado). Ela aponta
 requisitos faltando ou incorretos e alterações fora do escopo. Mudanças feitas
 pela própria plataforma não contam como problema.
@@ -88,7 +93,8 @@ pela própria plataforma não contam como problema.
 Resposta: `approved`, `summary`, `concerns`, `feedback_for_developer` (vai
 literalmente para a nota do Redmine e orienta o próximo ciclo de
 desenvolvimento) e `recommended_status`. Este último é sempre
-`Waiting for Tests Approval`, `Under Development` ou `Automation Error`.
+`Waiting for Tests Approval`, `Waiting for Development` (retrabalho) ou
+`Automation Error`.
 Se a resposta não for um JSON válido, o worker trata a revisão como
 **reprovada**.
 
